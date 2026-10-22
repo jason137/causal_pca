@@ -75,6 +75,9 @@ class EWMAPca:
         n_components: Number of PCs to retain (default 1).
         refit_interval: Re-eigendecompose every N steps (default 1).
             For d<=8 there is no reason to skip steps.
+        standardize: Eigendecompose the correlation matrix instead of
+            the raw covariance. Loadings are rescaled so projection
+            on raw (centered) inputs remains correct.
     """
 
     def __init__(
@@ -84,12 +87,14 @@ class EWMAPca:
         burn: int = 500,
         n_components: int = 1,
         refit_interval: int = 1,
+        standardize: bool = True,
     ) -> None:
         self.n_dim = n_dim
         self.halflife = halflife
         self.burn = max(burn, 2)
         self.n_components = n_components
         self.refit_interval = max(refit_interval, 1)
+        self.standardize = standardize
         self._alpha = 1.0 - 0.5 ** (1.0 / halflife)
 
         self._buf: np.ndarray | None = np.zeros((self.burn, n_dim))
@@ -99,6 +104,7 @@ class EWMAPca:
         self._mu = np.zeros(n_dim)
         self._cov = np.eye(n_dim)
         self._loadings = np.zeros((n_dim, n_components))
+        self._corr_loadings = np.zeros((n_dim, n_components))
         self._explained_var = np.zeros(n_components)
         self._warm = False
 
@@ -109,12 +115,48 @@ class EWMAPca:
 
     @property
     def loadings(self) -> np.ndarray:
-        """Current PC loadings, shape (n_dim, n_components)."""
+        """Projection loadings, shape (n_dim, n_components).
+
+        When standardize=True these are rescaled so that
+        ``_project(x, mu, loadings)`` on raw inputs is correct.
+        For interpretable weights use ``corr_loadings``.
+        """
         return self._loadings
 
     @property
+    def corr_loadings(self) -> np.ndarray:
+        """Correlation-space eigenvectors, shape (n_dim, n_components).
+
+        Identical to ``loadings`` when standardize=False.
+        """
+        return self._corr_loadings
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """Current EWMA covariance estimate, shape (n_dim, n_dim).
+
+        Updated *after* each ``step`` (like the loadings), so reading this BEFORE calling
+        ``step(x_t)`` yields the covariance over information <= t-1 — safe as a causal feature
+        (e.g. a mean-pairwise-correlation co-movement meter). Returns a copy; callers that need
+        a reduction (correlation, mean off-diagonal, condition number) derive it from this rather
+        than re-implementing the EWMA covariance estimator.
+
+        Returns:
+            Copy of the running EWMA covariance, shape (n_dim, n_dim).
+        """
+        return self._cov.copy()
+
+    @property
     def explained_variance_ratio(self) -> np.ndarray:
-        """Fraction of variance explained by each retained PC."""
+        """Fraction of variance explained by each retained PC.
+
+        Note:
+            standardize=True: correlation eigenvalue / n_dim (trace of a
+            correlation matrix). standardize=False: eigenvalue / trace of
+            the covariance; zeros if the trace is ~0.
+        """
+        if self.standardize:
+            return self._explained_var / max(self.n_dim, 1)
         total = np.trace(self._cov)
         if total < 1e-15:
             return np.zeros(self.n_components)
@@ -160,9 +202,30 @@ class EWMAPca:
         self._warm = True
 
     def _refit(self) -> None:
-        """Eigendecompose current covariance and update loadings."""
-        eigvals, eigvecs = np.linalg.eigh(self._cov)
-        idx = np.argsort(eigvals)[::-1][:self.n_components]
-        self._loadings = eigvecs[:, idx]
+        """Eigendecompose current covariance and update loadings.
+
+        Sets ``_loadings``, ``_corr_loadings`` and ``_explained_var``.
+
+        Note:
+            standardize=True: eigendecomposes the correlation matrix
+            (near-zero stds are replaced by 1 to avoid division by zero);
+            ``_loadings`` = corr eigenvectors / std, so projecting centered
+            raw inputs is correct, and ``_explained_var`` holds correlation
+            eigenvalues (sum = n_dim). standardize=False: eigendecomposes
+            the raw covariance; both loadings attributes are identical.
+        """
+        if self.standardize:
+            std = np.sqrt(np.diag(self._cov))
+            std = np.where(std < 1e-15, 1.0, std)
+            corr = self._cov / np.outer(std, std)
+            eigvals, eigvecs = np.linalg.eigh(corr)
+            idx = np.argsort(eigvals)[::-1][:self.n_components]
+            self._corr_loadings = eigvecs[:, idx]
+            self._loadings = self._corr_loadings / std[:, None]
+        else:
+            eigvals, eigvecs = np.linalg.eigh(self._cov)
+            idx = np.argsort(eigvals)[::-1][:self.n_components]
+            self._loadings = eigvecs[:, idx]
+            self._corr_loadings = self._loadings
         self._explained_var = eigvals[idx]
         self._steps_since_refit = 0

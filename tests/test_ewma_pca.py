@@ -205,7 +205,8 @@ class TestShapes:
 class TestStatistical:
     def test_pc1_captures_dominant_direction(self):
         d = 4
-        pca = EWMAPca(n_dim=d, halflife=200, burn=50, n_components=1)
+        pca = EWMAPca(n_dim=d, halflife=200, burn=50, n_components=1,
+                       standardize=False)
         rng = np.random.default_rng(99)
         scales = np.array([10.0, 1.0, 1.0, 1.0])
         _run_through(pca, rng.standard_normal((2000, d)) * scales)
@@ -224,18 +225,36 @@ class TestStatistical:
         assert pca.explained_variance_ratio.sum() <= 1.0 + 1e-10
 
     def test_loadings_unit_norm(self):
-        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=2)
+        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=2,
+                       standardize=False)
         _run_through(pca, _synth_correlated(200, 4))
         for k in range(2):
             np.testing.assert_allclose(
                 np.linalg.norm(pca.loadings[:, k]), 1.0, atol=1e-10
             )
 
+    def test_corr_loadings_unit_norm(self):
+        """corr_loadings are unit-norm eigenvectors when standardize=True."""
+        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=2)
+        _run_through(pca, _synth_correlated(200, 4))
+        for k in range(2):
+            np.testing.assert_allclose(
+                np.linalg.norm(pca.corr_loadings[:, k]), 1.0, atol=1e-10
+            )
+
     def test_loadings_orthogonal(self):
         """Retained PCs must be mutually orthogonal."""
-        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=3)
+        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=3,
+                       standardize=False)
         _run_through(pca, _synth_correlated(500, 4))
         G = pca.loadings.T @ pca.loadings
+        np.testing.assert_allclose(G, np.eye(3), atol=1e-10)
+
+    def test_corr_loadings_orthogonal(self):
+        """corr_loadings must be mutually orthogonal when standardize=True."""
+        pca = EWMAPca(n_dim=4, halflife=100, burn=30, n_components=3)
+        _run_through(pca, _synth_correlated(500, 4))
+        G = pca.corr_loadings.T @ pca.corr_loadings
         np.testing.assert_allclose(G, np.eye(3), atol=1e-10)
 
     def test_explained_variance_zero_cov(self):
@@ -329,7 +348,8 @@ class TestNonStationary:
         """
         d = 3
         hl = 200
-        pca = EWMAPca(n_dim=d, halflife=hl, burn=50, n_components=1)
+        pca = EWMAPca(n_dim=d, halflife=hl, burn=50, n_components=1,
+                       standardize=False)
         rng = np.random.default_rng(77)
 
         # regime 1: dim 0 dominant
@@ -350,8 +370,8 @@ class TestNonStationary:
         """
         d = 2
         rng = np.random.default_rng(33)
-        pca_fast = EWMAPca(n_dim=d, halflife=50, burn=20)
-        pca_slow = EWMAPca(n_dim=d, halflife=2000, burn=20)
+        pca_fast = EWMAPca(n_dim=d, halflife=50, burn=20, standardize=False)
+        pca_slow = EWMAPca(n_dim=d, halflife=2000, burn=20, standardize=False)
 
         # train both on dim-0 dominant
         for _ in range(5000):
